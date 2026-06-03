@@ -8,6 +8,8 @@ import 'record_screen.dart';
 import 'result_screen.dart';
 import 'referral_screen.dart';
 import 'add_child_screen.dart';
+import 'settings_screen.dart';
+import 'consent_screen.dart';
 import '../widgets/crypto_sandbox.dart';
 import '../widgets/pitch_slides.dart';
 
@@ -175,6 +177,23 @@ class AppShell extends StatelessWidget {
               ],
             ),
           ),
+          // Settings gear
+          GestureDetector(
+            onTap: () => provider.openSettings(),
+            child: Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(
+                Icons.settings_outlined,
+                color: Colors.white,
+                size: 16,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
           // Language selector
           PopupMenuButton<String>(
             padding: EdgeInsets.zero,
@@ -281,6 +300,10 @@ class AppShell extends StatelessWidget {
         return const ReferralScreen();
       case 'add_child':
         return const AddChildScreen();
+      case 'settings':
+        return const SettingsScreen();
+      case 'consent':
+        return const ConsentScreen();
       default:
         return const HomeScreen();
     }

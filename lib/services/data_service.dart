@@ -71,6 +71,64 @@ class DataService {
     await box.put('language', lang);
   }
 
+  // ─── Consent ─────────────────────────────────────
+
+  static bool getConsent() {
+    final box = Hive.box(_settingsBox);
+    return box.get('consent_given', defaultValue: false) as bool;
+  }
+
+  static DateTime? getConsentDate() {
+    final box = Hive.box(_settingsBox);
+    final ts = box.get('consent_timestamp');
+    if (ts is int) return DateTime.fromMillisecondsSinceEpoch(ts);
+    return null;
+  }
+
+  static Future<void> setConsent(bool given, DateTime date) async {
+    final box = Hive.box(_settingsBox);
+    await box.put('consent_given', given);
+    await box.put('consent_timestamp', date.millisecondsSinceEpoch);
+  }
+
+  // ─── Draft Auto-Save ────────────────────────────
+
+  static Map<String, dynamic>? loadDraft() {
+    final box = Hive.box(_settingsBox);
+    final raw = box.get('draft_data');
+    if (raw != null && raw is String && raw.isNotEmpty) {
+      try {
+        final map = json.decode(raw) as Map<String, dynamic>;
+        if (map['timestamp'] is int) {
+          map['timestamp'] =
+              DateTime.fromMillisecondsSinceEpoch(map['timestamp'] as int);
+        }
+        return map;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  static Future<void> saveDraft({
+    required String transcript,
+    required List<String> tags,
+    required String childId,
+  }) async {
+    final box = Hive.box(_settingsBox);
+    final data = {
+      'transcript': transcript,
+      'tags': tags,
+      'childId': childId,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    };
+    await box.put('draft_data', json.encode(data));
+  }
+
+  static Future<void> clearDraft() async {
+    final box = Hive.box(_settingsBox);
+    await box.delete('draft_data');
+  }
+
   // ─── Crypto Logs ──────────────────────────────────
 
   static CryptoLog generateCryptoLog({

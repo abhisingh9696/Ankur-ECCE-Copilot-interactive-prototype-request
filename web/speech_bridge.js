@@ -1,20 +1,19 @@
-// Ankur Voice Copilot - Deepgram Speech Bridge v4
-// Uses Deepgram WebSocket API for real-time speech-to-text.
-// getUserMedia → MediaRecorder → Deepgram WS → live transcript callbacks.
+// Ankur Voice Copilot - Deepgram Speech Bridge v5
+// Uses Deepgram REST API (not WebSocket) — works through any proxy.
+// getUserMedia → MediaRecorder → record to Blob → POST to Deepgram → transcript.
+// Falls back to word-by-word simulation if mic denied or unavailable.
 
 (function() {
   'use strict';
 
-  // ─── Configuration ──────────────────────────────────
   const DEEPGRAM_KEY = '[REVOKED]';
-  const DEEPGRAM_WS  = 'wss://api.deepgram.com/v1/listen';
+  const DEEPGRAM_URL  = 'https://api.deepgram.com/v1/listen';
 
-  let stream        = null;   // getUserMedia stream
-  let mediaRecorder = null;   // MediaRecorder
-  let ws            = null;   // Deepgram WebSocket
-  let simTimer      = null;   // simulation interval
-  let fullFinal     = '';     // accumulated final transcript
-  let interimText   = '';     // current interim transcript
+  let stream        = null;
+  let mediaRecorder = null;
+  let audioChunks   = [];
+  let simTimer      = null;
+  let isRecording   = false;
 
   // ─── Public state ───────────────────────────────────
   window.AnkurSpeech = {
@@ -39,145 +38,80 @@
     }[bcp] || 'en-IN';
   }
 
-  // ─── Clean up all resources ─────────────────────────
-  function cleanup() {
-    if (ws) {
-      try { ws.onmessage = null; ws.onerror = null; ws.onclose = null; ws.close(); } catch(e) {}
-      ws = null;
-    }
+  // ─── Clean up mic resources ─────────────────────────
+  function cleanupMic() {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      try { mediaRecorder.onstop = null; mediaRecorder.ondataavailable = null; mediaRecorder.stop(); } catch(e) {}
+      try { mediaRecorder.stop(); } catch(e) {}
       mediaRecorder = null;
     }
     if (stream) {
       stream.getTracks().forEach(function(t) { t.stop(); });
       stream = null;
     }
-    fullFinal = '';
-    interimText = '';
+    audioChunks = [];
+    isRecording = false;
+    window.AnkurSpeech.isListening = false;
   }
 
-  // ─── Start real microphone via Deepgram ─────────────
+  // ─── Start recording mic to local buffer ────────────
   window.AnkurRecordStart = function(lang) {
-    cleanup();
-    fullFinal = '';
-    interimText = '';
+    cleanupMic();
     window.AnkurSpeech.transcript = '';
     window.AnkurSpeech.isListening = true;
     window.AnkurSpeech.isSimulating = false;
+    audioChunks = [];
+    isRecording = true;
+    // Store language for later use in API call
+    window._ankurLang = lang || 'en-IN';
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       console.warn('[Ankur] getUserMedia not available');
+      window.AnkurSpeech.isListening = false;
       if (window._ankurSpeechFallback) window._ankurSpeechFallback();
       return false;
     }
+
+    console.log('[Ankur] Requesting microphone...');
 
     navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 48000 }
     }).then(function(micStream) {
       stream = micStream;
+      console.log('[Ankur] Microphone acquired. Starting recording...');
 
-      // Pick best supported mime type
+      // Pick best mime type
       var mime = 'audio/webm';
       if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
         mime = 'audio/webm;codecs=opus';
-      } else if (MediaRecorder.isTypeSupported('audio/webm;codecs=vorbis')) {
-        mime = 'audio/webm;codecs=vorbis';
       }
 
       mediaRecorder = new MediaRecorder(micStream, { mimeType: mime });
 
-      // Deepgram WebSocket (token in URL for browser compatibility)
-      var url = DEEPGRAM_WS +
-        '?encoding=opus' +
-        '&sample_rate=48000' +
-        '&channels=1' +
-        '&language=' + dgLang(lang) +
-        '&punctuate=true' +
-        '&interim_results=true' +
-        '&smart_format=true' +
-        '&utterance_end_ms=1500' +
-        '&endpointing=200';
-
-      ws = new WebSocket(url, ['token', DEEPGRAM_KEY]);
-
-      ws.onopen = function() {
-        console.log('[Ankur] Deepgram WS connected. Lang:', dgLang(lang));
-        mediaRecorder.start(250); // emit audio blob every 250ms
-      };
-
-      ws.onmessage = function(event) {
-        try {
-          var data = JSON.parse(event.data);
-          var channel = data.channel;
-          if (!channel || !channel.alternatives || !channel.alternatives.length) return;
-
-          var alt = channel.alternatives[0];
-          var text = alt.transcript || '';
-
-          if (data.is_final && text) {
-            fullFinal += ' ' + text;
-            fullFinal = fullFinal.trim();
-            interimText = '';
-          } else {
-            interimText = text;
-          }
-
-          var display = fullFinal;
-          if (interimText) display = display ? (display + ' ' + interimText) : interimText;
-          window.AnkurSpeech.transcript = display;
-
-          if (window._ankurReceiveTranscript) {
-            window._ankurReceiveTranscript(display);
-          }
-        } catch(e) {
-          console.warn('[Ankur] Parse error:', e);
-        }
-      };
-
-      ws.onerror = function(err) {
-        console.error('[Ankur] Deepgram WS error:', err);
-        cleanup();
-        window.AnkurSpeech.isListening = false;
-        if (window._ankurSpeechFallback) {
-          window._ankurSpeechFallback();
-        }
-      };
-
-      ws.onclose = function(ev) {
-        console.log('[Ankur] Deepgram WS closed:', ev.code, ev.reason);
-        // If stream stopped already, ignore
-      };
-
-      // Audio data → send to Deepgram
       mediaRecorder.ondataavailable = function(event) {
-        if (event.data && event.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(event.data);
+        if (event.data && event.data.size > 0) {
+          audioChunks.push(event.data);
         }
       };
 
       mediaRecorder.onstop = function() {
-        console.log('[Ankur] MediaRecorder stopped. Final transcript length:', fullFinal.length);
-        // Close WS gracefully — it will send final results
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          // Send a CloseStream message to Deepgram
-          try { ws.send(JSON.stringify({ type: 'CloseStream' })); } catch(e) {}
-          setTimeout(function() {
-            if (ws) { try { ws.close(); } catch(e) {} ws = null; }
-          }, 500);
-        }
+        console.log('[Ankur] Recording stopped. Chunks:', audioChunks.length);
+        // Don't process here — AnkurRecordStop handles it
       };
+
+      mediaRecorder.start(500); // collect audio every 500ms
+      console.log('[Ankur] MediaRecorder started with mime:', mime);
+
+      // Send a live-feedback pulse to Dart so the user sees "Listening..."
+      if (window._ankurReceiveTranscript) {
+        window._ankurReceiveTranscript('');
+      }
 
     }).catch(function(err) {
       console.error('[Ankur] getUserMedia error:', err.name, err.message);
-      cleanup();
-      window.AnkurSpeech.isListening = false;
-
+      cleanupMic();
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        // User explicitly denied — fall back to simulation
         if (window._ankurSpeechFallback) window._ankurSpeechFallback();
       } else if (err.name === 'NotFoundError') {
-        // No microphone — fall back
         if (window._ankurSpeechFallback) window._ankurSpeechFallback();
       } else {
         if (window._ankurSpeechError) window._ankurSpeechError(err.message || err.name);
@@ -187,43 +121,98 @@
     return true;
   };
 
-  // ─── Stop recording gracefully ──────────────────────
+  // ─── Stop recording and send to Deepgram ─────────────
   window.AnkurRecordStop = function() {
+    console.log('[Ankur] Stop requested. Chunks collected:', audioChunks.length);
     window.AnkurSpeech.isListening = false;
+    isRecording = false;
+
+    var deliverResult = function(text) {
+      window.AnkurSpeech.transcript = text;
+      cleanupMic();
+      if (text && window._ankurSpeechEnded) {
+        window._ankurSpeechEnded(text);
+      } else if (window._ankurSpeechEnded) {
+        window._ankurSpeechEnded('');
+      }
+    };
+
+    var sendToDeepgram = function(blob) {
+      if (!blob || blob.size < 100) {
+        console.warn('[Ankur] Audio too small, skipping Deepgram. Size:', blob ? blob.size : 0);
+        deliverResult('');
+        return;
+      }
+
+      // Determine mimetype for Deepgram based on what we recorded
+      var contentType = blob.type || 'audio/webm';
+
+      console.log('[Ankur] Sending to Deepgram REST API... Size:', blob.size, 'Type:', contentType);
+      var langCode = dgLang(window._ankurLang || 'en-IN');
+      var url = DEEPGRAM_URL +
+        '?model=nova-2&language=' + langCode +
+        '&punctuate=true&smart_format=true&utterances=true';
+
+      fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Token ' + DEEPGRAM_KEY,
+          'Content-Type': contentType
+        },
+        body: blob
+      }).then(function(response) {
+        console.log('[Ankur] Deepgram response status:', response.status);
+        if (!response.ok) {
+          return response.text().then(function(txt) {
+            console.error('[Ankur] Deepgram error:', response.status, txt);
+            throw new Error('Deepgram HTTP ' + response.status);
+          });
+        }
+        return response.json();
+      }).then(function(data) {
+        console.log('[Ankur] Deepgram response:', JSON.stringify(data).substring(0, 200));
+        var channel = data.results && data.results.channels && data.results.channels[0];
+        var alt = channel && channel.alternatives && channel.alternatives[0];
+        var text = (alt && alt.transcript) || '';
+        console.log('[Ankur] Transcript:', text);
+        deliverResult(text.trim());
+      }).catch(function(err) {
+        console.error('[Ankur] Deepgram fetch failed:', err.message);
+        // Fall back to simulation on error
+        if (window._ankurSpeechFallback) window._ankurSpeechFallback();
+        cleanupMic();
+      });
+    };
 
     if (mediaRecorder && mediaRecorder.state === 'recording') {
-      // onstop handler will deliver final transcript
-      var onStop = function() {
-        mediaRecorder = null;
-        // Deliver final result
-        var final = fullFinal || window.AnkurSpeech.transcript;
-        window.AnkurSpeech.transcript = final;
-        if (window._ankurSpeechEnded) {
-          window._ankurSpeechEnded(final);
-        }
-        // Cleanup stream & ws
+      // onstop handler processes the blob
+      var origOnStop = mediaRecorder.onstop;
+      mediaRecorder.onstop = function() {
+        var blob = new Blob(audioChunks, { type: mediaRecorder ? mediaRecorder.mimeType : 'audio/webm' });
+        // Clean stream
         if (stream) { stream.getTracks().forEach(function(t) { t.stop(); }); stream = null; }
-        if (ws) { try { ws.close(); } catch(e) {} ws = null; }
+        mediaRecorder = null;
+        sendToDeepgram(blob);
       };
-      mediaRecorder.onstop = onStop;
       try { mediaRecorder.stop(); } catch(e) {
-        // Already stopped — deliver what we have
-        onStop();
+        // Already stopped
+        var blob = new Blob(audioChunks, { type: 'audio/webm' });
+        sendToDeepgram(blob);
       }
     } else {
-      // No active recorder — deliver whatever was captured
-      var final = fullFinal || window.AnkurSpeech.transcript;
-      if (window._ankurSpeechEnded) {
-        window._ankurSpeechEnded(final);
+      // No active recorder — use what we have
+      if (audioChunks.length > 0) {
+        var blob = new Blob(audioChunks, { type: 'audio/webm' });
+        sendToDeepgram(blob);
+      } else {
+        deliverResult('');
       }
-      cleanup();
     }
   };
 
   // ─── Abort recording (discard) ──────────────────────
   window.AnkurRecordAbort = function() {
-    window.AnkurSpeech.isListening = false;
-    cleanup();
+    cleanupMic();
     window.AnkurSpeech.transcript = '';
   };
 
@@ -277,5 +266,5 @@
     window.AnkurSpeech.isSimulating = false;
   };
 
-  console.log('[Ankur] Deepgram bridge v4 loaded. getUserMedia:', window.AnkurCheckSupport());
+  console.log('[Ankur] Deepgram REST bridge v5 loaded. getUserMedia:', window.AnkurCheckSupport());
 })();

@@ -1,0 +1,6 @@
+{
+  "buildCommand": "git clone --depth 1 https://github.com/flutter/flutter.git -b stable /tmp/flutter && export PATH=\"/tmp/flutter/bin:$PATH\" && flutter config --enable-web && flutter build web --release",
+  "outputDirectory": "build/web",
+  "framework": null,
+  "name": "ankur-voice-copilot"
+}

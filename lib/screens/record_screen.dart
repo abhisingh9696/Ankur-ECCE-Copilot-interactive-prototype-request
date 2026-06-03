@@ -271,11 +271,11 @@ class _RecordScreenState extends State<RecordScreen>
                                 // Graceful stop — Deepgram delivers final result via callback
                                 js.context.callMethod('AnkurRecordStop', []);
                               } else {
-                                // START recording
-                                provider.startRecording();
+                                // START recording via real mic
+                                provider.onMicStarted();
                                 _liveTranscript = '';
                                 _pulseController.repeat(reverse: true);
-                                // Always try real mic first via Deepgram.
+                                // Always try real mic first via Deepgram REST API.
                                 // JS bridge handles fallback via _ankurSpeechFallback callback.
                                 js.context.callMethod(
                                   'AnkurRecordStart', [langCode]);
