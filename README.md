@@ -103,6 +103,23 @@ flutter run -d <device>
 Vercel deploys directly from this repo (`vercel.json`): it clones Flutter stable,
 enables web, and builds `--release` into `build/web`.
 
+### Deepgram API key (no key in code)
+
+The repo ships **no API key**. On the first voice recording, the app asks for
+your Deepgram key in a dialog and stores it **only in your browser's
+localStorage** — it is never committed and never sent anywhere except Deepgram.
+
+To pre-configure it (e.g. for your own deployment), inject it before the app
+loads — the bridge also reads `window.ANKUR_DEEPGRAM_KEY`:
+
+```html
+<script>window.ANKUR_DEEPGRAM_KEY = 'your-key';</script>
+<script src="speech_bridge.js"></script>
+```
+
+> ⚠️ Never commit a Deepgram key. If a key was ever committed to this repo,
+> revoke it at console.deepgram.com and create a new one.
+
 ## Privacy model (as demonstrated)
 
 - Child identities are **pseudonymous** (`hmac_…` IDs); names never leave the device.

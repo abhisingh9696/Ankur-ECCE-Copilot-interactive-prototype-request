@@ -1,13 +1,38 @@
-// Ankur Voice Copilot - Deepgram Speech Bridge v5
+// Ankur Voice Copilot - Deepgram Speech Bridge v6
 // Uses Deepgram REST API (not WebSocket) — works through any proxy.
 // getUserMedia → MediaRecorder → record to Blob → POST to Deepgram → transcript.
 // Falls back to word-by-word simulation if mic denied or unavailable.
+//
+// NO API key is stored in code. At runtime the key is read from:
+//   1. window.ANKUR_DEEPGRAM_KEY          (injected by the host page / build config)
+//   2. localStorage 'ankur_deepgram_key'  (saved by the in-app key prompt)
+// If neither is present, the bridge asks the app (_ankurSpeechNeedKey) to
+// prompt the user, and the app saves it via AnkurSetDeepgramKey.
 
 (function() {
   'use strict';
 
-  const DEEPGRAM_KEY = '[REVOKED]';
-  const DEEPGRAM_URL  = 'https://api.deepgram.com/v1/listen';
+  const DEEPGRAM_URL = 'https://api.deepgram.com/v1/listen';
+  const LS_KEY = 'ankur_deepgram_key';
+
+  function resolveKey() {
+    let k = (window.ANKUR_DEEPGRAM_KEY || '').trim();
+    if (!k) {
+      try { k = (localStorage.getItem(LS_KEY) || '').trim(); } catch (e) {}
+    }
+    return k;
+  }
+
+  // Set the key at runtime (called by the app's key prompt).
+  window.AnkurSetDeepgramKey = function(key) {
+    const k = (key || '').trim();
+    try { localStorage.setItem(LS_KEY, k); } catch (e) {}
+    return k.length > 0;
+  };
+
+  window.AnkurHasDeepgramKey = function() {
+    return resolveKey().length > 0;
+  };
 
   let stream        = null;
   let mediaRecorder = null;
@@ -138,6 +163,14 @@
     };
 
     var sendToDeepgram = function(blob) {
+      var apiKey = resolveKey();
+      if (!apiKey) {
+        console.warn('[Ankur] No Deepgram key configured — asking the app to prompt for one.');
+        if (window._ankurSpeechNeedKey) window._ankurSpeechNeedKey();
+        deliverResult('');
+        return;
+      }
+
       if (!blob || blob.size < 100) {
         console.warn('[Ankur] Audio too small, skipping Deepgram. Size:', blob ? blob.size : 0);
         deliverResult('');
@@ -156,7 +189,7 @@
       fetch(url, {
         method: 'POST',
         headers: {
-          'Authorization': 'Token ' + DEEPGRAM_KEY,
+          'Authorization': 'Token ' + apiKey,
           'Content-Type': contentType
         },
         body: blob
@@ -266,5 +299,5 @@
     window.AnkurSpeech.isSimulating = false;
   };
 
-  console.log('[Ankur] Deepgram REST bridge v5 loaded. getUserMedia:', window.AnkurCheckSupport());
+  console.log('[Ankur] Deepgram REST bridge v6 loaded (key configured: ' + window.AnkurHasDeepgramKey() + '). getUserMedia:', window.AnkurCheckSupport());
 })();

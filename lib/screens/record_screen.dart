@@ -69,7 +69,81 @@ class _RecordScreenState extends State<RecordScreen>
           );
         }
       });
+
+      js.context['_ankurSpeechNeedKey'] = js.allowInterop(() {
+        if (!mounted) return;
+        _promptForDeepgramKey(restartAfterSave: true);
+      });
     });
+  }
+
+  // ─── Deepgram key prompt ──────────────────────────
+
+  Future<void> _promptForDeepgramKey({bool restartAfterSave = false}) async {
+    final controller = TextEditingController();
+    final saved = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Deepgram API key needed'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Voice transcription needs your Deepgram API key. '
+              'It is stored only in this browser (localStorage) and is '
+              'never committed or sent to any server other than Deepgram.',
+              style: TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              obscureText: true,
+              autofocus: true,
+              decoration: const InputDecoration(
+                hintText: 'Paste your Deepgram API key',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Save & continue'),
+          ),
+        ],
+      ),
+    );
+
+    if (saved != null && saved.isNotEmpty) {
+      js.context.callMethod('AnkurSetDeepgramKey', [saved]);
+      if (restartAfterSave && mounted) {
+        final provider = context.read<AppProvider>();
+        _startMic(provider);
+      }
+    }
+  }
+
+  // ─── Start mic (key is expected to be present) ─────
+
+  void _startMic(AppProvider provider) {
+    provider.onMicStarted();
+    _liveTranscript = '';
+    _pulseController.repeat(reverse: true);
+    final langCode = {
+      'en': 'en-IN',
+      'hi': 'hi-IN',
+      'ta': 'ta-IN',
+      'gu': 'gu-IN',
+    }[provider.language] ??
+        'en-IN';
+    js.context.callMethod('AnkurRecordStart', [langCode]);
+    setState(() {});
   }
 
   @override
@@ -86,6 +160,7 @@ class _RecordScreenState extends State<RecordScreen>
     try { js.context['_ankurSpeechEnded'] = null; } catch (_) {}
     try { js.context['_ankurSpeechFallback'] = null; } catch (_) {}
     try { js.context['_ankurSpeechError'] = null; } catch (_) {}
+    try { js.context['_ankurSpeechNeedKey'] = null; } catch (_) {}
   }
 
   @override
@@ -94,14 +169,6 @@ class _RecordScreenState extends State<RecordScreen>
       builder: (context, provider, _) {
         final lang = provider.language;
         final child = provider.selectedChild;
-
-        // Map language to BCP-47 codes
-        final langCode = {
-          'en': 'en-IN',
-          'hi': 'hi-IN',
-          'ta': 'ta-IN',
-          'gu': 'gu-IN',
-        }[lang] ?? 'en-IN';
 
         return Container(
           color: const Color(0xFF0F172A),
@@ -271,15 +338,15 @@ class _RecordScreenState extends State<RecordScreen>
                                 // Graceful stop — Deepgram delivers final result via callback
                                 js.context.callMethod('AnkurRecordStop', []);
                               } else {
-                                // START recording via real mic
-                                provider.onMicStarted();
-                                _liveTranscript = '';
-                                _pulseController.repeat(reverse: true);
-                                // Always try real mic first via Deepgram REST API.
-                                // JS bridge handles fallback via _ankurSpeechFallback callback.
-                                js.context.callMethod(
-                                  'AnkurRecordStart', [langCode]);
-                                setState(() {});
+                                // START recording via real mic.
+                                // Ask for the Deepgram key first if not configured.
+                                final hasKey =
+                                    js.context.callMethod('AnkurHasDeepgramKey', []) == true;
+                                if (!hasKey) {
+                                  _promptForDeepgramKey(restartAfterSave: true);
+                                } else {
+                                  _startMic(provider);
+                                }
                               }
                             },
                             child: Container(
